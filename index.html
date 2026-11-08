@@ -1588,6 +1588,7 @@
                 <div class="flex gap-2"><button id="cust-dine" onclick="setCustomerOrderMode('Dine-In')" aria-pressed="true" class="flex-1 rounded-xl p-3 bg-gold-500 text-mocha-900 text-sm font-bold transition-all">Dine-In</button><button id="cust-takeout" onclick="setCustomerOrderMode('Takeout')" aria-pressed="false" class="flex-1 rounded-xl p-3 bg-mocha-700 text-gray-200 text-sm font-bold transition-all">Takeout</button></div>
                 <input id="cust-search" oninput="renderCustomerMenu()" placeholder="Search menu…" aria-label="Search menu" class="w-full glass-input p-3 rounded-xl text-sm">
                 <div id="cust-categories" class="flex gap-2 overflow-x-auto pb-2 pt-1" role="group" aria-label="Menu categories"></div>
+                <p id="cust-menu-connection" class="hidden rounded-xl border border-amber-500/30 bg-amber-950/25 p-3 text-xs text-amber-200" role="status" aria-live="polite"></p>
                 <div id="cust-menu" class="space-y-3"><p class="text-xs text-gray-400">Loading menu…</p></div>
                 <section class="rounded-2xl border border-gold-500/30 bg-mocha-800 p-4 space-y-3" id="cust-tray-section"><h2 class="font-bold">Review your tray <span id="cust-tray-count" class="text-gold-400">(0)</span></h2><div id="cust-tray" class="space-y-2 text-sm"></div><label class="block text-xs text-gray-300">Special notes (e.g., 50% sugar, extra pearls)</label><textarea id="cust-notes" rows="2" class="w-full glass-input p-3 rounded-xl text-sm" placeholder="Add order notes…"></textarea><p class="text-right text-lg font-bold text-gold-300" id="cust-total">₱0.00</p><button id="cust-submit" onclick="submitCustomerMobileOrder()" class="w-full rounded-xl bg-gold-500 text-mocha-900 p-3 font-bold disabled:opacity-50" disabled>Submit Order</button><p id="cust-status" class="text-xs text-gray-400" aria-live="polite"></p></section>
             </div>`;
@@ -1598,22 +1599,77 @@
         let customerSelectedItemId = null;
         let customerOrderMode = 'Dine-In';
         let customerMenuRefreshTimer = null;
+        const CUSTOMER_MENU_CACHE_KEY = '39ers_customer_menu_cache_v1';
+        function readCustomerMenuCache() {
+            try {
+                const cached = JSON.parse(localStorage.getItem(CUSTOMER_MENU_CACHE_KEY) || 'null');
+                return Array.isArray(cached) && cached.length ? cached : [];
+            } catch (_) { return []; }
+        }
+        function saveCustomerMenuCache(menu) {
+            try { localStorage.setItem(CUSTOMER_MENU_CACHE_KEY, JSON.stringify(menu)); } catch (_) { /* storage may be unavailable */ }
+        }
+        function showCustomerMenuConnectionNotice(message = '') {
+            const notice = document.getElementById('cust-menu-connection');
+            if (!notice) return;
+            notice.textContent = message;
+            notice.classList.toggle('hidden', !message);
+        }
+        async function requestCustomerMenu(retries = 3) {
+            let lastError;
+            for (let attempt = 0; attempt < retries; attempt++) {
+                let response;
+                try {
+                    response = await fetch('/api/mobile-menu', { cache: 'no-store' });
+                } catch (error) {
+                    lastError = error;
+                    if (attempt === retries - 1) throw error;
+                    await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
+                    continue;
+                }
+                const data = await response.json().catch(() => ({}));
+                if (response.ok && data.ok && Array.isArray(data.menu)) return data;
+                const error = new Error(data.message || `Menu service returned HTTP ${response.status}`);
+                if (![502, 503, 504].includes(response.status) || attempt === retries - 1) throw error;
+                lastError = error;
+                await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
+            }
+            throw lastError || new Error('Menu service is temporarily unavailable.');
+        }
+        function startCustomerMenuRefresh() {
+            if (customerMenuRefreshTimer) clearInterval(customerMenuRefreshTimer);
+            // Recheck less aggressively; checkout always performs a fresh server-side check.
+            customerMenuRefreshTimer = setInterval(() => {
+                if (customerMenuCatalog.length) refreshCustomerMenuAvailability();
+                else loadCustomerMenu();
+            }, 60000);
+        }
         async function loadCustomerMenu() {
             const menuElement = document.getElementById('cust-menu');
             try {
-                const response = await fetch('/api/mobile-menu', { cache: 'no-store' });
-                const data = await response.json().catch(() => ({}));
-                if (!response.ok || !data.ok) throw new Error(data.message || `Menu service returned HTTP ${response.status}`);
-                customerMenuCatalog = Array.isArray(data.menu) ? data.menu : [];
+                const data = await requestCustomerMenu(3);
+                customerMenuCatalog = data.menu;
                 if (!customerMenuCatalog.length) throw new Error('The store menu has not been published yet. Please ask the cashier to open the POS and publish the menu.');
+                saveCustomerMenuCache(customerMenuCatalog);
+                showCustomerMenuConnectionNotice('');
                 customerCategory = 'ALL';
                 renderCustomerCategoryTabs();
                 renderCustomerMenu();
                 renderCustomerTray();
-                if (customerMenuRefreshTimer) clearInterval(customerMenuRefreshTimer);
-                customerMenuRefreshTimer = setInterval(refreshCustomerMenuAvailability, 20000);
+                startCustomerMenuRefresh();
             } catch (error) {
-                if (menuElement) menuElement.innerHTML = `<p class="text-rose-300 text-sm">Could not load menu: ${escapeHtml(error.message)}. Please ask the cashier.</p>`;
+                const cachedMenu = readCustomerMenuCache();
+                if (cachedMenu.length) {
+                    customerMenuCatalog = cachedMenu;
+                    renderCustomerCategoryTabs();
+                    renderCustomerMenu();
+                    renderCustomerTray();
+                    showCustomerMenuConnectionNotice('Connection interrupted. Showing the last loaded menu while we reconnect. Availability will be checked again before you submit.');
+                    startCustomerMenuRefresh();
+                } else if (menuElement) {
+                    menuElement.innerHTML = `<div class="rounded-xl border border-rose-500/30 bg-rose-950/30 p-3"><p class="text-rose-200 text-sm">Could not connect to the menu service: ${escapeHtml(error.message)}.</p><button type="button" onclick="loadCustomerMenu()" class="mt-3 rounded-lg bg-gold-500 px-4 py-2 text-sm font-bold text-mocha-900">Try again</button></div>`;
+                    startCustomerMenuRefresh();
+                }
             }
         }
         function renderCustomerCategoryTabs() {
@@ -1655,16 +1711,20 @@
         }
         async function refreshCustomerMenuAvailability() {
             try {
-                const response = await fetch('/api/mobile-menu', { cache: 'no-store' });
-                const data = await response.json().catch(() => ({}));
-                if (!response.ok || !data.ok || !Array.isArray(data.menu)) return false;
+                const data = await requestCustomerMenu(2);
+                if (!Array.isArray(data.menu) || !data.menu.length) throw new Error('The published menu is currently empty.');
                 customerMenuCatalog = data.menu;
+                saveCustomerMenuCache(customerMenuCatalog);
+                showCustomerMenuConnectionNotice('');
                 renderCustomerCategoryTabs();
                 renderCustomerMenu();
                 renderCustomerTray();
                 return true;
             } catch (error) {
-                console.warn('Customer menu availability refresh failed:', error);
+                console.warn('Customer menu availability refresh failed; keeping the last successful menu:', error);
+                if (customerMenuCatalog.length) {
+                    showCustomerMenuConnectionNotice('Connection interrupted. Your menu is still displayed. We will retry automatically. Current availability will be checked again before you submit.');
+                }
                 return false;
             }
         }
@@ -1782,10 +1842,14 @@
             };
             status.textContent = 'Checking latest availability…';
             try {
-                const availabilityResponse = await fetch('/api/mobile-menu', { cache: 'no-store' });
-                const availabilityData = await availabilityResponse.json().catch(() => ({}));
-                if (!availabilityResponse.ok || !availabilityData.ok || !Array.isArray(availabilityData.menu)) {
-                    throw new Error('Could not verify current stock. Please refresh the menu and try again.');
+                let availabilityData;
+                try {
+                    availabilityData = await requestCustomerMenu(3);
+                } catch (_) {
+                    throw new Error('The menu service is temporarily unavailable. Your order has not been submitted. Please try again shortly.');
+                }
+                if (!Array.isArray(availabilityData.menu) || !availabilityData.menu.length) {
+                    throw new Error('Could not verify current stock. Your order has not been submitted. Please refresh the menu and try again.');
                 }
                 customerMenuCatalog = availabilityData.menu;
                 const requiredByItem = new Map();

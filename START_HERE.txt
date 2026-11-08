@@ -1,0 +1,36 @@
+39ERS DELIGHTS — COMPLETE MOBILE QR UPDATE
+
+1. This is a complete Netlify project. Preserve the folders exactly as extracted:
+   public, netlify, lib, docs
+   plus netlify.toml, package.json, .gitignore and README.md.
+
+2. The website file is public/index.html. The customer QR menu is part of that
+   same page and opens when the QR link uses ?customerOrder=1.
+
+3. Your MP3 is public/assets/39ers-delights-jingle.mp3.
+
+4. The server functions must be in netlify/functions and storage helper in lib.
+   Do not flatten these files into the repository root.
+
+5. Keep your existing GitHub repository backup. Upload this package's contents
+   to the repository ROOT on your mobile-qr-update branch, preserving paths.
+   Do not delete older root-level files as part of this upload.
+
+6. Keep netlify.toml at repository root. It publishes public/ and uses
+   netlify/functions/ for functions.
+
+7. Use a Pull Request / Deploy Preview before merging to the production branch.
+   Check README.md for the detailed checklist and mobile audio restrictions.
+
+IMPORTANT: Mobile browsers may block autoplay with sound until the first tap.
+The QR page tries autoplay and starts the music on the first interaction if
+permitted. It also has a Play jingle button. A website cannot override phone
+browser autoplay restrictions.
+
+This ZIP contains application source and the MP3, not live POS records, browser
+storage, Netlify Blobs data, tokens, or secrets. Do not clear browser data or
+remove the existing Netlify Blobs store.
+
+
+MENU HTTP 502 RELIABILITY UPDATE
+The mobile-menu function now retries short Blobs read failures and logs a mobile-menu incident ID. The customer QR page retries transient 502/503/504 errors, retains its last successfully loaded public menu on that phone, and reconnects automatically every 60 seconds. The cached menu is for display only: a fresh server check is still required at checkout, and failed checks prevent order submission. If errors continue, inspect Netlify Function logs for [mobile-menu] and the incident ID. Do not clear Blobs or reset cashier authorization.
